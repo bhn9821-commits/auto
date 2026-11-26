@@ -1,0 +1,668 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>용학도서관 연체자 관리 통합 시스템</title>
+    <!-- 브라우저 내장 파이썬 구동 엔진 (Pyodide) -->
+    <script src="https://cdn.jsdelivr.net/pyodide/v0.26.1/full/pyodide.js"></script>
+    <style>
+        :root { --bg:#f7f7fb; --card:#fff; --text:#202124; --muted:#666; --line:#ddd; --accent:#1a73e8; }
+        * { box-sizing: border-box; }
+        body { margin: 0; font-family: system-ui, -apple-system, sans-serif; background: var(--bg); color: var(--text); }
+        .wrap { max-width: 640px; margin: 40px auto; padding: 0 18px; }
+        .card { background: var(--card); border: 1px solid var(--line); border-radius: 18px; padding: 30px; box-shadow: 0 8px 24px rgba(0,0,0,.06); }
+        h1 { margin: 0 0 8px 0; font-size: 22px; color: #111827; }
+        p.desc { color: var(--muted); font-size: 14px; margin-bottom: 20px; line-height: 1.5; }
+        
+        .tab-menu { display: flex; gap: 8px; margin-bottom: 20px; border-bottom: 2px solid var(--line); padding-bottom: 8px; }
+        .tab-btn { flex: 1; border: none; background: #e8eaed; padding: 12px; font-weight: 700; font-size: 14px; border-radius: 10px; cursor: pointer; color: var(--muted); }
+        .tab-btn.active { background: var(--accent); color: #fff; }
+
+        .tab-content { display: none; }
+        .tab-content.active { display: block; }
+
+        .field { display: flex; flex-direction: column; gap: 8px; margin-bottom: 20px; }
+        label { font-weight: 700; font-size: 14px; }
+        input[type=file] { border: 1px solid var(--line); padding: 10px; border-radius: 10px; background: #fff; }
+        button.action-btn { width: 100%; border: 0; padding: 14px; background: var(--accent); color: white; font-weight: 800; font-size: 16px; border-radius: 10px; cursor: pointer; margin-top: 10px; }
+        button.action-btn:disabled { background: #9dbff3; cursor: not-allowed; }
+        button.action-btn:hover:not(:disabled) { background: #1557b0; }
+        .status { white-space: pre-wrap; background: #111827; color: #e5e7eb; border-radius: 12px; padding: 16px; margin-top: 20px; font-family: monospace; font-size: 13px; line-height: 1.6; }
+        .credit { margin: 14px 0 0; text-align: center; color: var(--muted); font-size: 12px; letter-spacing: .2px; }
+    </style>
+</head>
+<body>
+
+<main class="wrap">
+    <section class="card">
+        <h1>📚 용학도서관 연체자 관리 통합 시스템</h1>
+        <p class="desc"><strong>PC 내 파이썬 설치 불필요 (브라우저 자체 엔진 구동)</strong></p>
+
+        <!-- 탭 메뉴 -->
+        <div class="tab-menu">
+            <button class="tab-btn active" onclick="switchTab('formatTab')">이번주 연체자 양식 생성</button>
+            <button class="tab-btn" onclick="switchTab('updateTab')">저번주 연체자 관리자 파일 최신화</button>
+        </div>
+
+        <!-- 탭 1: 이번주 연체자 양식 생성 -->
+        <div id="formatTab" class="tab-content active">
+            <div class="field">
+                <label for="rawFile">원래 날것 연체자 엑셀 (.xls, .xlsx)</label>
+                <input type="file" id="rawFile" accept=".xls, .xlsx">
+            </div>
+            <button id="formatBtn" class="action-btn" disabled onclick="runFormatting()">엔진 초기화 중...</button>
+        </div>
+
+        <!-- 탭 2: 저번주 연체자 관리자 파일 최신화 -->
+        <div id="updateTab" class="tab-content">
+            <div class="field">
+                <label for="oldFile">1. [기존 가공 대장] 저번주 연체자 엑셀 (.xlsx)</label>
+                <input type="file" id="oldFile" accept=".xlsx">
+            </div>
+
+            <div class="field">
+                <label for="newFile">2. [날것 원본 파일] 이번주 연체자 엑셀 (.xls, .xlsx)</label>
+                <input type="file" id="newFile" accept=".xls, .xlsx">
+            </div>
+            <button id="updateBtn" class="action-btn" disabled onclick="runUpdating()">엔진 초기화 중...</button>
+        </div>
+
+        <!-- 상태 출력창 -->
+        <div id="status" class="status">🔄 파이썬 엔진(Pyodide)을 불러오는 중입니다... (약 5초 소요)</div>
+    </section>
+    <p class="credit">Made by 김경태</p>
+</main>
+
+<script>
+let pyodide = null;
+
+function switchTab(tabId) {
+    document.querySelectorAll('.tab-btn').forEach(btn => btn.classList.remove('active'));
+    document.querySelectorAll('.tab-content').forEach(content => content.classList.remove('active'));
+    
+    if (tabId === 'formatTab') {
+        document.querySelectorAll('.tab-btn')[0].classList.add('active');
+    } else {
+        document.querySelectorAll('.tab-btn')[1].classList.add('active');
+    }
+    document.getElementById(tabId).classList.add('active');
+}
+
+async function initPyodide() {
+    const status = document.getElementById('status');
+    const formatBtn = document.getElementById('formatBtn');
+    const updateBtn = document.getElementById('updateBtn');
+    
+    try {
+        pyodide = await loadPyodide();
+        status.innerText = "📦 openpyxl / xlrd 엑셀 패키지 설치 중...";
+        
+        await pyodide.loadPackage(["pandas", "micropip"]);
+        const micropip = pyodide.pyimport("micropip");
+        await micropip.install(["openpyxl", "xlrd"]);
+        
+        status.innerText = "✅ 엔진 준비 완료! 파일 선택 후 변환 버튼을 누르세요.";
+        formatBtn.innerText = "이번주 연체자 관리 파일 생성";
+        updateBtn.innerText = "최신화 실행 및 다운로드";
+        formatBtn.disabled = false;
+        updateBtn.disabled = false;
+    } catch (err) {
+        status.innerText = "❌ 엔진 로딩 실패 (인터넷 연결을 확인하세요):\n" + err.message;
+    }
+}
+
+initPyodide();
+
+// [기능 1] 날것 원본 -> 이번주 연체자 관리 파일 생성
+async function runFormatting() {
+    const rawFile = document.getElementById('rawFile').files[0];
+    const status = document.getElementById('status');
+    const btn = document.getElementById('formatBtn');
+
+    if (!rawFile) {
+        alert("가공할 원본 엑셀 파일을 선택해 주세요.");
+        return;
+    }
+
+    btn.disabled = true;
+    status.innerText = "⏳ 정식 서식을 적용하여 이번주 연체자 관리 파일을 생성하는 중입니다...";
+
+    try {
+        const fileBuf = new Uint8Array(await rawFile.arrayBuffer());
+        pyodide.FS.writeFile('input_raw_file', fileBuf);
+        pyodide.FS.writeFile('input_filename_txt', rawFile.name);
+
+        const pythonCode = `
+import datetime
+import pandas as pd
+import openpyxl
+from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+
+filename = 'input_raw_file'
+with open('input_filename_txt', 'r', encoding='utf-8') as f:
+    orig_name = f.read().strip()
+
+engine_type = 'xlrd' if orig_name.lower().endswith('.xls') else 'openpyxl'
+raw_df = pd.read_excel(filename, engine=engine_type, header=None)
+
+# 1. 헤더 행 탐색
+header_idx = -1
+for i, row in raw_df.iterrows():
+    row_str = [str(v).strip() for v in row.values]
+    if '연체일' in row_str and any(k in row_str for k in ['이름', '대출자번호', '이용자ID', '대출자ID']):
+        header_idx = i
+        break
+
+if header_idx == -1:
+    header_idx = 1
+
+df = raw_df.iloc[header_idx + 1:].copy()
+df.columns = [str(c).strip().replace('\\n', '') for c in raw_df.iloc[header_idx].values]
+
+# 동적 키워드 컬럼 탐색
+id_col = next((c for c in df.columns if any(k in str(c) for k in ['이용자ID', '대출자번호', '대출자ID'])), None)
+name_col = next((c for c in df.columns if any(k in str(c) for k in ['이름', '이용자명', '대출자명'])), None)
+rank_col = next((c for c in df.columns if '직급' in str(c)), None)
+phone_col = next((c for c in df.columns if any(k in str(c) for k in ['연락처', '전화번호', '핸드폰', '휴대폰'])), None)
+reg_col = next((c for c in df.columns if '등록번호' in str(c)), None)
+title_col = next((c for c in df.columns if any(k in str(c) for k in ['서명', '도서명', '자료명'])), None)
+loc_col = next((c for c in df.columns if '자료실' in str(c)), None)
+loan_date_col = next((c for c in df.columns if '대출일' in str(c)), None)
+due_date_col = next((c for c in df.columns if '반납예정일' in str(c)), None)
+overdue_col = next((c for c in df.columns if '연체일' in str(c)), None)
+
+if overdue_col and id_col:
+    df = df.sort_values(by=[overdue_col, id_col], ascending=[True, True])
+
+wb = openpyxl.Workbook()
+ws = wb.active
+ws.title = "통합데스크"
+
+ws.sheet_view.showGridLines = True
+ws.sheet_properties.outlinePr.summaryBelow = False
+ws.freeze_panes = 'F3'
+
+# 2. 날짜 자동 계산 (화요일 ~ 토요일)
+today = datetime.datetime.now()
+days_since_tuesday = (today.weekday() - 1) % 7
+tuesday = today - datetime.timedelta(days=days_since_tuesday)
+saturday = tuesday + datetime.timedelta(days=4)
+
+tue_m, tue_d = tuesday.month, tuesday.day
+sat_m, sat_d = saturday.month, saturday.day
+year = tuesday.year
+
+title_text = "용학도서관 통합데스크 " + str(tue_m) + ". " + str(tue_d) + ".(화)~" + str(sat_m) + ". " + str(sat_d) + ".(토) 연체자 관리 결과"
+download_filename = "용학도서관 연체자 관리 결과(" + str(year) + ". " + str(tue_m) + ". " + str(tue_d) + ".~ " + str(sat_m) + ". " + str(sat_d) + ".).xlsx"
+
+# 3. 1행 메인 타이틀
+ws.merge_cells('A1:L1')
+ws['A1'] = title_text
+ws['A1'].font = Font(name="수성돋움체", size=20, bold=True)
+ws['A1'].alignment = Alignment(horizontal='center', vertical='center')
+ws.row_dimensions[1].height = 31.5
+
+# 4. 2행 헤더
+headers = ['연번', '이용자ID', '이름', '직급', '연락처', '등록번호', '서명', '자료실', '대출일', '반납예정일', '연체일', '비고']
+ws.append(headers)
+ws.row_dimensions[2].height = 34.5
+
+fill_green = PatternFill(start_color="C2D69B", end_color="C2D69B", fill_type="solid")
+fill_pink = PatternFill(start_color="E5B8B7", end_color="E5B8B7", fill_type="solid")
+fill_blue = PatternFill(start_color="B8CCE4", end_color="B8CCE4", fill_type="solid")
+
+font_header_base = Font(name="수성바탕체", size=11, bold=True)
+font_header_name = Font(name="수성바탕체", size=12, bold=True)
+center_align = Alignment(horizontal='center', vertical='center')
+left_align = Alignment(horizontal='left', vertical='center')
+
+border_medium = Side(style='medium', color='000000')
+border_thin = Side(style='thin', color='000000')
+
+for c in range(1, 13):
+    cell = ws.cell(2, c)
+    cell.fill = fill_green
+    cell.font = font_header_name if c == 3 else font_header_base
+    cell.alignment = center_align
+    
+    left_b = border_medium if c in [1, 7, 12] else border_thin
+    right_b = border_medium if c in [6, 11, 12] else border_thin
+    
+    cell.border = Border(
+        top=border_medium,
+        left=left_b,
+        right=right_b,
+        bottom=border_medium
+    )
+
+# 5. 데이터 행 입력
+row_cursor = 3
+for _, r_data in df.iterrows():
+    val_id = str(r_data.get(id_col, '') or '').strip() if id_col else ''
+    if val_id in ['', 'nan', 'None']:
+        continue
+    
+    val_name = str(r_data.get(name_col, '') or '').strip() if name_col else ''
+    if val_name in ['nan', 'None']: val_name = ""
+    
+    val_rank = str(r_data.get(rank_col, '') or '').strip() if rank_col else ''
+    if val_rank in ['nan', 'None']: val_rank = ""
+        
+    val_phone = str(r_data.get(phone_col, '') or '').strip() if phone_col else ''
+    if val_phone in ['nan', 'None']: val_phone = ""
+    
+    val_reg = str(r_data.get(reg_col, '') or '').strip() if reg_col else ''
+    if val_reg in ['nan', 'None']: val_reg = ""
+    
+    val_title = str(r_data.get(title_col, '') or '').strip() if title_col else ''
+    if val_title in ['nan', 'None']: val_title = ""
+    
+    val_loc = str(r_data.get(loc_col, '') or '').strip() if loc_col else ''
+    if val_loc in ['nan', 'None']: val_loc = ""
+    
+    val_loan = str(r_data.get(loan_date_col, '') or '').strip() if loan_date_col else ''
+    if val_loan in ['nan', 'None']: val_loan = ""
+    
+    val_due = str(r_data.get(due_date_col, '') or '').strip() if due_date_col else ''
+    if val_due in ['nan', 'None']: val_due = ""
+
+    ws.cell(row=row_cursor, column=1, value="")
+    ws.cell(row=row_cursor, column=2, value=val_id)
+    ws.cell(row=row_cursor, column=3, value=val_name)
+    ws.cell(row=row_cursor, column=4, value=val_rank)
+    ws.cell(row=row_cursor, column=5, value=val_phone)
+    ws.cell(row=row_cursor, column=6, value=val_reg)
+    ws.cell(row=row_cursor, column=7, value=val_title)
+    ws.cell(row=row_cursor, column=8, value=val_loc)
+    ws.cell(row=row_cursor, column=9, value=val_loan)
+    ws.cell(row=row_cursor, column=10, value=val_due)
+    
+    overdue_val = r_data.get(overdue_col, '') if overdue_col else ''
+    try:
+        overdue_val = int(overdue_val)
+    except:
+        pass
+    ws.cell(row=row_cursor, column=11, value=overdue_val)
+    ws.row_dimensions[row_cursor].height = 16.5
+    row_cursor += 1
+
+max_data_row = row_cursor - 1
+
+# 6. 이용자 블록별 연번/비고 병합 및 구분선(마지막 행은 medium 두꺼운 선) 적용
+i = 3
+font_data = Font(name="맑은 고딕", size=11, bold=False)
+
+while i <= max_data_row:
+    user_key = (ws.cell(i, 2).value, ws.cell(i, 11).value)
+    j = i + 1
+    while j <= max_data_row:
+        next_key = (ws.cell(j, 2).value, ws.cell(j, 11).value)
+        if user_key != next_key:
+            break
+        j += 1
+    end_row = j - 1
+
+    if i < end_row:
+        ws.merge_cells(start_row=i, start_column=1, end_row=end_row, end_column=1)
+        ws.merge_cells(start_row=i, start_column=12, end_row=end_row, end_column=12)
+        ws.row_dimensions.group(i + 1, end_row, hidden=False)
+
+    for r in range(i, end_row + 1):
+        for c in range(1, 13):
+            cell = ws.cell(r, c)
+            cell.font = font_data
+            
+            left_b = border_medium if c in [1, 7, 12] else border_thin
+            right_b = border_medium if c in [6, 11, 12] else border_thin
+            
+            # 🔥 이용자 블록의 마지막 행(end_row)은 아래쪽 테두리를 medium 두꺼운 선으로 그어 다음 이용자와 명확히 구분!
+            bot_b = border_medium if r == end_row else border_thin
+            top_b = border_medium if r == 3 else border_thin
+            
+            cell.border = Border(
+                top=top_b,
+                bottom=bot_b,
+                left=left_b,
+                right=right_b
+            )
+            
+            if c == 7:
+                cell.alignment = left_align
+            else:
+                cell.alignment = center_align
+
+    i = j
+
+# 7. 정밀 열 너비 세팅
+col_widths = {
+    'A': 6.25, 'B': 18.25, 'C': 10.625, 'D': 10.625, 'E': 15.375,
+    'F': 14.625, 'G': 70.75, 'H': 21.625, 'I': 19.5, 'J': 20.125,
+    'K': 5.5, 'L': 48.375
+}
+for col_let, width in col_widths.items():
+    ws.column_dimensions[col_let].width = width
+
+# 8. 하단 통계 표 생성
+sum_row = max_data_row + 3
+ws.row_dimensions[sum_row].height = 19.5
+ws.row_dimensions[sum_row + 1].height = 21.0
+ws.row_dimensions[sum_row + 4].height = 26.25
+ws.row_dimensions[sum_row + 5].height = 26.25
+ws.row_dimensions[sum_row + 6].height = 27.0
+
+cell_s2 = ws.cell(sum_row, 2, "연체자 수")
+cell_s2.font = Font(name="맑은 고딕", size=13, bold=True)
+cell_s2.fill = fill_green
+cell_s2.alignment = center_align
+cell_s2.border = Border(top=border_medium, bottom=border_thin, left=border_medium, right=border_thin)
+
+cell_s3 = ws.cell(sum_row, 3, "연체도서")
+cell_s3.font = Font(name="맑은 고딕", size=12, bold=True)
+cell_s3.fill = fill_green
+cell_s3.alignment = center_align
+cell_s3.border = Border(top=border_medium, bottom=border_thin, left=border_thin, right=border_thin)
+
+cell_s4 = ws.cell(sum_row, 4, "CD")
+cell_s4.font = Font(name="맑은 고딕", size=13, bold=True)
+cell_s4.fill = fill_green
+cell_s4.alignment = center_align
+cell_s4.border = Border(top=border_medium, bottom=border_thin, left=border_thin, right=border_medium)
+
+formula_v2 = '=COUNTA(L$2:L$' + str(max_data_row + 85) + ')-1&"명"'
+v2 = ws.cell(sum_row + 1, 2, formula_v2)
+v2.font = Font(name="맑은 고딕", size=14, bold=False)
+v2.alignment = center_align
+v2.border = Border(top=border_thin, bottom=border_medium, left=border_medium, right=border_thin)
+
+formula_v3 = '=COUNTA(F:F)-SUM(COUNTIF(F:F,"CMF*"),COUNTIF(F:F,"CMG*"),COUNTIF(F:F,"CMH*"),COUNTIF(F:F,"CMJ*"),COUNTIF(F:F,"CMK*"),COUNTIF(F:F,"CML*"),COUNTIF(F:F,"CMM*"),COUNTIF(F:F,"CMN*"),COUNTIF(F:F,"CMP*"),COUNTIF(F:F,"CMQ*"),COUNTIF(F:F,"CMR*"),COUNTIF(F:F,"CMS*"),COUNTIF(F:F,"CMU*"),COUNTIF(F:F,"CMV*"),COUNTIF(F:F,"CMW*"),COUNTIF(F:F,"CMX*"),COUNTIF(F:F,"CMY*"),COUNTIF(F:F,"CMZ*"),COUNTIF(F:F,"CMA*"),COUNTIF(F:F,"CMB*"),COUNTIF(F:F,"CMC*"),COUNTIF(F:F,"CMD*"),COUNTIF(F:F,"CME*"))-1&"권"'
+v3 = ws.cell(sum_row + 1, 3, formula_v3)
+v3.font = Font(name="맑은 고딕", size=12, bold=False)
+v3.alignment = center_align
+v3.border = Border(top=border_thin, bottom=border_medium, left=border_thin, right=border_thin)
+
+formula_v4 = '=SUM(COUNTIF(F:F,"CMF*"),COUNTIF(F:F,"CMG*"),COUNTIF(F:F,"CMH*"),COUNTIF(F:F,"CMJ*"),COUNTIF(F:F,"CMK*"),COUNTIF(F:F,"CML*"),COUNTIF(F:F,"CMM*"),COUNTIF(F:F,"CMN*"),COUNTIF(F:F,"CMP*"),COUNTIF(F:F,"CMQ*"),COUNTIF(F:F,"CMR*"),COUNTIF(F:F,"CMS*"),COUNTIF(F:F,"CMU*"),COUNTIF(F:F,"CMV*"),COUNTIF(F:F,"CMW*"),COUNTIF(F:F,"CMX*"),COUNTIF(F:F,"CMY*"),COUNTIF(F:F,"CMZ*"),COUNTIF(F:F,"CMA*"),COUNTIF(F:F,"CMB*"),COUNTIF(F:F,"CMC*"),COUNTIF(F:F,"CMD*"),COUNTIF(F:F,"CME*"))&"매"'
+v4 = ws.cell(sum_row + 1, 4, formula_v4)
+v4.font = Font(name="맑은 고딕", size=14, bold=False)
+v4.alignment = center_align
+v4.border = Border(top=border_thin, bottom=border_medium, left=border_thin, right=border_medium)
+
+r4_2 = ws.cell(sum_row + 4, 2, "반납")
+r4_2.font = Font(name="맑은 고딕", size=10, bold=False)
+r4_2.alignment = center_align
+r4_2.border = Border(top=border_medium, bottom=border_thin, left=border_medium, right=border_thin)
+
+formula_r4_3 = '=COUNTIF(L:L,"*반납완료*")&"명"'
+r4_3 = ws.cell(sum_row + 4, 3, formula_r4_3)
+r4_3.font = Font(name="맑은 고딕", size=16, bold=True)
+r4_3.alignment = center_align
+r4_3.border = Border(top=border_medium, bottom=border_thin, left=border_thin, right=border_medium)
+
+r5_2 = ws.cell(sum_row + 5, 2, "미반납")
+r5_2.font = Font(name="맑은 고딕", size=10, bold=False)
+r5_2.fill = fill_pink
+r5_2.alignment = center_align
+r5_2.border = Border(top=border_thin, bottom=border_thin, left=border_medium, right=border_thin)
+
+formula_r5_3 = '=COUNTIFS(L:L,"<>반납완료",L:L,"<>")-1&"명"'
+r5_3 = ws.cell(sum_row + 5, 3, formula_r5_3)
+r5_3.font = Font(name="맑은 고딕", size=16, bold=True)
+r5_3.alignment = center_align
+r5_3.border = Border(top=border_thin, bottom=border_thin, left=border_thin, right=border_medium)
+
+r6_2 = ws.cell(sum_row + 6, 2, "기타")
+r6_2.font = Font(name="맑은 고딕", size=10, bold=False)
+r6_2.fill = fill_blue
+r6_2.alignment = center_align
+r6_2.border = Border(top=border_thin, bottom=border_medium, left=border_medium, right=border_thin)
+
+# 🔥 2. C열 셀 가장 밑('기타' 옆)에 =COUNTIF(L:L,"*기타*")&"명" 수식 반영 완료
+formula_r6_3 = '=COUNTIF(L:L,"*기타*")&"명"'
+r6_3 = ws.cell(sum_row + 6, 3, formula_r6_3)
+r6_3.font = Font(name="맑은 고딕", size=16, bold=True)
+r6_3.alignment = center_align
+r6_3.border = Border(top=border_thin, bottom=border_medium, left=border_thin, right=border_medium)
+
+wb.save('formatted_out.xlsx')
+f"{download_filename}|{title_text}"
+`;
+
+        const res = await pyodide.runPythonAsync(pythonCode);
+        const [downloadName, titleText] = res.split('|');
+
+        const outBuf = pyodide.FS.readFile('formatted_out.xlsx');
+        const blob = new Blob([outBuf], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+        
+        const link = document.createElement('a');
+        link.href = URL.createObjectURL(blob);
+        link.download = downloadName;
+        link.click();
+
+        status.innerText = `✅ 이번주 연체자 관리 파일 생성 완료!\n\n` +
+            `• 📌 상단 제목: ${titleText}\n` +
+            `• 💾 다운로드 파일명: ${downloadName}\n` +
+            `• 📏 이용자 블록별 하단 구분선(두꺼운 검은선) 복원 완료\n` +
+            `• 📊 '기타' 수식(=COUNTIF(L:L,"*기타*")&"명") 적용 완료`;
+
+    } catch (err) {
+        console.error(err);
+        status.innerText = "❌ 처리 중 오류 발생:\n" + err.message;
+    } finally {
+        btn.disabled = false;
+    }
+}
+
+// [기능 2] 저번주 연체자 관리자 파일 최신화 기능
+async function runUpdating() {
+    const oldFile = document.getElementById('oldFile').files[0];
+    const newFile = document.getElementById('newFile').files[0];
+    const status = document.getElementById('status');
+    const btn = document.getElementById('updateBtn');
+
+    if (!oldFile || !newFile) {
+        alert("두 개의 엑셀 파일을 모두 선택해 주세요.");
+        return;
+    }
+
+    btn.disabled = true;
+    status.innerText = "⏳ 엑셀 서식을 보전하며 최신화하는 중입니다...";
+
+    try {
+        const oldBuf = new Uint8Array(await oldFile.arrayBuffer());
+        const newBuf = new Uint8Array(await newFile.arrayBuffer());
+
+        pyodide.FS.writeFile('old_input.xlsx', oldBuf);
+        pyodide.FS.writeFile('new_input.xls', newBuf);
+
+        const pythonCode = `
+import pandas as pd
+import openpyxl
+from openpyxl.styles import PatternFill, Font, Border, Side
+
+old_filename = 'old_input.xlsx'
+new_filename = 'new_input.xls'
+
+engine_new = 'xlrd' if new_filename.endswith('.xls') else 'openpyxl'
+df_temp = pd.read_excel(new_filename, header=None, nrows=10, engine=engine_new)
+
+header_idx = 0
+for idx, row in df_temp.iterrows():
+    row_str = [str(val).strip() for val in row.values]
+    if any(k in row_str for k in ['등록번호', '대출자번호', '이용자ID']):
+        header_idx = idx
+        break
+
+df_new = pd.read_excel(new_filename, header=header_idx, engine=engine_new)
+df_new.columns = [str(c).strip() for c in df_new.columns]
+
+current_overdue_reg_nos = set()
+if '등록번호' in df_new.columns:
+    for x in df_new['등록번호'].dropna().unique():
+        s = str(x).strip()
+        if s and s not in ['nan', 'None', '']:
+            current_overdue_reg_nos.add(s)
+
+wb_old = openpyxl.load_workbook(old_filename)
+ws_old = wb_old.active
+
+ws_old.sheet_properties.outlinePr.summaryBelow = False
+ws_old.freeze_panes = 'F3'
+
+white_fill = PatternFill(start_color="FFFFFF", end_color="FFFFFF", fill_type="solid")
+red_bold_font = Font(color="FF0000", bold=True)
+border_medium = Side(style='medium', color='000000')
+border_thin = Side(style='thin', color='000000')
+
+summary_start_row = ws_old.max_row + 1
+for r in range(1, ws_old.max_row + 1):
+    str_comb = f"{ws_old.cell(row=r, column=1).value} {ws_old.cell(row=r, column=2).value} {ws_old.cell(row=r, column=3).value}"
+    if any(k in str_comb for k in ['연체자 수', '연체자수', '연체도서', '통계']):
+        summary_start_row = r
+        break
+
+def set_top_left_cell_value(ws, row, col, val, font):
+    cell = ws.cell(row=row, column=col)
+    if type(cell).__name__ == 'MergedCell':
+        for rng in ws.merged_cells.ranges:
+            if rng.min_row <= row <= rng.max_row and rng.min_col <= col <= rng.max_col:
+                top_cell = ws.cell(row=rng.min_row, column=rng.min_col)
+                top_cell.value = val
+                top_cell.font = font
+                return
+    else:
+        cell.value = val
+        cell.font = font
+
+header_row_idx = 2
+reg_col_idx = 6
+bego_col_idx = 12
+id_col_idx = 2
+
+for r in range(1, 10):
+    row_vals = [str(ws_old.cell(row=r, column=c).value).strip() for c in range(1, 15)]
+    if '등록번호' in row_vals:
+        header_row_idx = r
+        reg_col_idx = row_vals.index('등록번호') + 1
+        if '비고' in row_vals:
+            bego_col_idx = row_vals.index('비고') + 1
+        if '이용자ID' in row_vals:
+            id_col_idx = row_vals.index('이용자ID') + 1
+        elif '대출자번호' in row_vals:
+            id_col_idx = row_vals.index('대출자번호') + 1
+        break
+
+patron_blocks = []
+current_block = None
+last_id = None
+
+for row in range(header_row_idx + 1, summary_start_row):
+    val_id = ws_old.cell(row=row, column=id_col_idx).value
+    val_reg = ws_old.cell(row=row, column=reg_col_idx).value
+    val_a = ws_old.cell(row=row, column=1).value
+    
+    str_id = str(val_id).strip() if val_id is not None else ''
+    str_reg = str(val_reg).strip() if val_reg is not None else ''
+    
+    if not str_id or str_id in ['nan', 'None']:
+        continue
+        
+    is_new_block = False
+    if val_a is not None and str(val_a).strip() not in ['', 'None', 'nan']:
+        is_new_block = True
+    elif last_id is None or str_id != last_id:
+        is_new_block = True
+        
+    if is_new_block:
+        if current_block:
+            patron_blocks.append(current_block)
+        current_block = {'start_row': row, 'end_row': row, 'reg_nos': set()}
+        last_id = str_id
+    else:
+        if current_block:
+            current_block['end_row'] = row
+            
+    if str_reg and str_reg not in ['', 'None', 'nan']:
+        current_block['reg_nos'].add(str_reg)
+
+if current_block:
+    patron_blocks.append(current_block)
+
+returned_count = 0
+still_overdue_count = 0
+
+for pb in patron_blocks:
+    if pb['start_row'] < pb['end_row']:
+        ws_old.row_dimensions.group(pb['start_row'] + 1, pb['end_row'], hidden=False)
+
+    # 이용자 블록 마지막 행 하단 테두리(두꺼운 구분선) 보전
+    for c in range(1, 13):
+        cell_end = ws_old.cell(pb['end_row'], c)
+        b = cell_end.border
+        cell_end.border = Border(
+            left=b.left if b else border_thin,
+            right=b.right if b else border_thin,
+            top=b.top if b else border_thin,
+            bottom=border_medium
+        )
+
+    is_still_overdue = any(r in current_overdue_reg_nos for r in pb['reg_nos']) if pb['reg_nos'] else False
+    
+    if is_still_overdue:
+        still_overdue_count += 1
+    else:
+        set_top_left_cell_value(ws_old, pb['start_row'], bego_col_idx, "반납완료", red_bold_font)
+        for r in range(pb['start_row'], pb['end_row'] + 1):
+            for c in range(1, 13):  # 실제 업무 표 A~L열만 처리
+                ws_old.cell(row=r, column=c).fill = white_fill
+        returned_count += 1
+
+# 요약표 '기타' 수식 확인 및 업데이트
+for r in range(summary_start_row, ws_old.max_row + 1):
+    if str(ws_old.cell(r, 2).value).strip() == '기타':
+        ws_old.cell(r, 3).value = '=COUNTIF(L:L,"*기타*")&"명"'
+        break
+
+# 기존 버전이 생성한 표 밖의 빈 흰색 셀만 정리 (값/수식/주석/병합 보존)
+protected_ranges = list(ws_old.merged_cells.ranges)
+for key, cell in list(ws_old._cells.items()):
+    row_idx, col_idx = key
+    if col_idx <= 14 or type(cell).__name__ == 'MergedCell':
+        continue
+    if cell.value is not None or cell.comment is not None or cell.hyperlink is not None:
+        continue
+    if any(rng.min_row <= row_idx <= rng.max_row and rng.min_col <= col_idx <= rng.max_col for rng in protected_ranges):
+        continue
+    if cell.fill == white_fill and not cell.border.left.style and not cell.border.right.style and not cell.border.top.style and not cell.border.bottom.style:
+        del ws_old._cells[key]
+
+wb_old.save('output.xlsx')
+f"{still_overdue_count}|{returned_count}|{summary_start_row}"
+`;
+
+        const res = await pyodide.runPythonAsync(pythonCode);
+        const [stillCnt, retCnt, sumRow] = res.split('|');
+
+        const outBuf = pyodide.FS.readFile('output.xlsx');
+        const blob = new Blob([outBuf], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+        
+        const link = document.createElement('a');
+        link.href = URL.createObjectURL(blob);
+        link.download = '최신화_' + oldFile.name;
+        link.click();
+
+        status.innerText = `✅ 저번주 연체자 관리자 파일 최신화 완료!\n\n` +
+            `• ⏳ 연체 유지: ${stillCnt}개 블록\n` +
+            `• 🌸 반납 완료: ${retCnt}개 블록\n` +
+            `• 📏 이용자 블록별 두꺼운 구분선 및 통계 수식 유지 완료`;
+
+    } catch (err) {
+        console.error(err);
+        status.innerText = "❌ 처리 중 오류 발생:\n" + err.message;
+    } finally {
+        btn.disabled = false;
+    }
+}
+</script>
+
+</body>
+</html>
